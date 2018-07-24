@@ -100,3 +100,15 @@ the configuration file does not need to configure it explicitly.
 Please refer to Documentation/ntb.txt in Linux source tree for an overall
 understanding of the Linux NTB stack. ntb_hw_switchtec works as an NTB
 Hardware Driver in this stack.
+
+Sg commands support in OS
+=========================
+Os user can use sg_util tool to manage the Switchtec throuth below 4 types of sg commands.
+
+sg_inq --- sg inquery
+
+sg_turs --- sg test unit ready
+
+sg_senddiag --- sg send diagnostic
+
+sg_ses --- sg inquery first then sg receive diagnostic
