@@ -78,3 +78,15 @@ The following IOCTLs are also supported by the device:
   between PCI Function Framework number (used by the event system)
   and Switchtec Logic Port ID and Partition number (which is more
   user friendly).
+
+Sg commands support in OS
+=========================
+Os user can use sg_util tool to manage the Switchtec throuth below 4 types of sg commands.
+
+sg_inq --- sg inquery
+
+sg_turs --- sg test unit ready
+
+sg_senddiag --- sg send diagnostic
+
+sg_ses --- sg inquery first then sg receive diagnostic
