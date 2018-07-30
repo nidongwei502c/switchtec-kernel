@@ -22,10 +22,12 @@
 #include <linux/uaccess.h>
 #include <linux/poll.h>
 #include <linux/wait.h>
+#include "switchtec_sg.h"
+
 
 #include "version.h"
 MODULE_DESCRIPTION("Microsemi Switchtec(tm) PCIe Management Driver");
-MODULE_VERSION(VERSION);
+MODULE_VERSION("0.1.2");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Microsemi Corporation");
 
@@ -141,6 +143,10 @@ static void mrpc_cmd_submit(struct switchtec_dev *stdev)
 	memcpy_toio(&stdev->mmio_mrpc->input_data,
 		    stuser->data, stuser->data_len);
 	iowrite32(stuser->cmd, &stdev->mmio_mrpc->cmd);
+
+	stuser->status = ioread32(&stdev->mmio_mrpc->status);
+	if (stuser->status != SWITCHTEC_MRPC_STATUS_INPROGRESS)
+		mrpc_complete_cmd(stdev);
 
 	schedule_delayed_work(&stdev->mrpc_timeout,
 			      msecs_to_jiffies(500));
@@ -956,6 +962,14 @@ static long switchtec_dev_ioctl(struct file *filp, unsigned int cmd,
 	case SWITCHTEC_IOCTL_PORT_TO_PFF:
 		rc = ioctl_port_to_pff(stdev, argp);
 		break;
+	case SWITCHTEC_IOCTL_SG_CMD:
+		printk("%s: SG ioctl\n", __FUNCTION__);
+		rc = fem_sg_ioctl(filp, cmd, arg);
+		break;
+	case SG_OEM_PAGE:
+		LOG_DEBUG("%s: Light SG OEM page\n", __FUNCTION__);
+		rc = pmc_psx_ioctl(filp,cmd,arg);
+		break;
 	default:
 		rc = -ENOTTY;
 		break;
@@ -1389,6 +1403,8 @@ static int __init switchtec_init(void)
 {
 	int rc;
 
+	printk("Athena Host Driver Version %s\n",DRIVER_VERSION);
+	
 	rc = alloc_chrdev_region(&switchtec_devt, 0, max_devices,
 				 "switchtec");
 	if (rc)
