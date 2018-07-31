@@ -123,7 +123,6 @@ struct switchtec_ntb {
 	bool link_is_up;
 	enum ntb_speed link_speed;
 	enum ntb_width link_width;
-	struct work_struct link_reinit_work;
 };
 
 static struct switchtec_ntb *ntb_sndev(struct ntb_dev *ntb)
@@ -178,7 +177,7 @@ static int switchtec_ntb_part_op(struct switchtec_ntb *sndev,
 
 	if (ps == status) {
 		dev_err(&sndev->stdev->dev,
-			"Timed out while performing %s (%d). (%08x)\n",
+			"Timed out while performing %s (%d). (%08x)",
 			op_text[op], op,
 			ioread32(&ctl->partition_status));
 
@@ -320,7 +319,6 @@ static void switchtec_ntb_mw_clr_direct(struct switchtec_ntb *sndev, int idx)
 	ctl_val &= ~NTB_CTRL_BAR_DIR_WIN_EN;
 	iowrite32(ctl_val, &ctl->bar_entry[bar].ctl);
 	iowrite32(0, &ctl->bar_entry[bar].win_size);
-	iowrite32(0, &ctl->bar_ext_entry[bar].win_size);
 	iowrite64(sndev->self_partition, &ctl->bar_entry[bar].xlate_addr);
 }
 
@@ -343,9 +341,7 @@ static void switchtec_ntb_mw_set_direct(struct switchtec_ntb *sndev, int idx,
 	ctl_val |= NTB_CTRL_BAR_DIR_WIN_EN;
 
 	iowrite32(ctl_val, &ctl->bar_entry[bar].ctl);
-	iowrite32(xlate_pos | (size & 0xFFFFF000),
-		  &ctl->bar_entry[bar].win_size);
-	iowrite32(size >> 32, &ctl->bar_ext_entry[bar].win_size);
+	iowrite32(xlate_pos | size, &ctl->bar_entry[bar].win_size);
 	iowrite64(sndev->self_partition | addr,
 		  &ctl->bar_entry[bar].xlate_addr);
 }
@@ -368,27 +364,13 @@ static int switchtec_ntb_mw_set_trans(struct ntb_dev *ntb, int idx,
 	int nr_direct_mw = sndev->peer_nr_direct_mw;
 	int rc;
 
-	dev_dbg(&sndev->stdev->dev, "MW %d: %016llx %016llx\n", idx,
-		addr, size);
+	dev_dbg(&sndev->stdev->dev, "MW %d: %016llx %016llx", idx, addr, size);
 
 	if (idx >= switchtec_ntb_mw_count(ntb))
 		return -EINVAL;
 
 	if (xlate_pos < 12)
 		return -EINVAL;
-
-	if (addr & ((1 << xlate_pos) - 1)) {
-		/*
-		 * In certain circumstances we can get a buffer that is
-		 * not aligned to its size. (Most of the time
-		 * dma_alloc_coherent ensures this). This can happen when
-		 * using large buffers allocated by the CMA
-		 * (see CMA_CONFIG_ALIGNMENT)
-		 */
-		dev_err(&sndev->stdev->dev,
-			"ERROR: Memory window address is not aligned to it's size!\n");
-		return -EINVAL;
-	}
 
 	rc = switchtec_ntb_part_op(sndev, ctl, NTB_CTRL_PART_OP_LOCK,
 				   NTB_CTRL_PART_STATUS_LOCKED);
@@ -412,7 +394,7 @@ static int switchtec_ntb_mw_set_trans(struct ntb_dev *ntb, int idx,
 
 	if (rc == -EIO) {
 		dev_err(&sndev->stdev->dev,
-			"Hardware reported an error configuring mw %d: %08x\n",
+			"Hardware reported an error configuring mw %d: %08x",
 			idx, ioread32(&ctl->bar_error));
 
 		if (idx < nr_direct_mw)
@@ -490,42 +472,17 @@ static void crosslink_init_dbmsgs(struct switchtec_ntb *sndev)
 		  &sndev->mmio_peer_dbmsg->odb_mask);
 }
 
-enum switchtec_msg {
+enum {
 	LINK_MESSAGE = 0,
 	MSG_LINK_UP = 1,
 	MSG_LINK_DOWN = 2,
 	MSG_CHECK_LINK = 3,
-	MSG_LINK_FORCE_DOWN = 4,
 };
 
-static int switchtec_ntb_reinit_peer(struct switchtec_ntb *sndev);
-
-static void link_reinit_work(struct work_struct *work)
-{
-	struct switchtec_ntb *sndev;
-
-	sndev = container_of(work, struct switchtec_ntb, link_reinit_work);
-
-	switchtec_ntb_reinit_peer(sndev);
-}
-
-static void switchtec_ntb_check_link(struct switchtec_ntb *sndev,
-				     enum switchtec_msg msg)
+static void switchtec_ntb_check_link(struct switchtec_ntb *sndev)
 {
 	int link_sta;
 	int old = sndev->link_is_up;
-
-	if (msg == MSG_LINK_FORCE_DOWN) {
-		schedule_work(&sndev->link_reinit_work);
-
-		if (sndev->link_is_up) {
-			sndev->link_is_up = 0;
-			ntb_link_event(&sndev->ntb);
-			dev_info(&sndev->stdev->dev, "ntb link forced down\n");
-		}
-
-		return;
-	}
 
 	link_sta = sndev->self_shared->link_sta;
 	if (link_sta) {
@@ -543,7 +500,7 @@ static void switchtec_ntb_check_link(struct switchtec_ntb *sndev,
 	if (link_sta != old) {
 		switchtec_ntb_send_msg(sndev, LINK_MESSAGE, MSG_CHECK_LINK);
 		ntb_link_event(&sndev->ntb);
-		dev_info(&sndev->stdev->dev, "ntb link %s\n",
+		dev_info(&sndev->stdev->dev, "ntb link %s",
 			 link_sta ? "up" : "down");
 
 		if (link_sta)
@@ -555,7 +512,7 @@ static void switchtec_ntb_link_notification(struct switchtec_dev *stdev)
 {
 	struct switchtec_ntb *sndev = stdev->sndev;
 
-	switchtec_ntb_check_link(sndev, MSG_CHECK_LINK);
+	switchtec_ntb_check_link(sndev);
 }
 
 static int switchtec_ntb_link_is_up(struct ntb_dev *ntb,
@@ -578,12 +535,12 @@ static int switchtec_ntb_link_enable(struct ntb_dev *ntb,
 {
 	struct switchtec_ntb *sndev = ntb_sndev(ntb);
 
-	dev_dbg(&sndev->stdev->dev, "enabling link\n");
+	dev_dbg(&sndev->stdev->dev, "enabling link");
 
 	sndev->self_shared->link_sta = 1;
 	switchtec_ntb_send_msg(sndev, LINK_MESSAGE, MSG_LINK_UP);
 
-	switchtec_ntb_check_link(sndev, MSG_CHECK_LINK);
+	switchtec_ntb_check_link(sndev);
 
 	return 0;
 }
@@ -592,12 +549,12 @@ static int switchtec_ntb_link_disable(struct ntb_dev *ntb)
 {
 	struct switchtec_ntb *sndev = ntb_sndev(ntb);
 
-	dev_dbg(&sndev->stdev->dev, "disabling link\n");
+	dev_dbg(&sndev->stdev->dev, "disabling link");
 
 	sndev->self_shared->link_sta = 0;
-	switchtec_ntb_send_msg(sndev, LINK_MESSAGE, MSG_LINK_DOWN);
+	switchtec_ntb_send_msg(sndev, LINK_MESSAGE, MSG_LINK_UP);
 
-	switchtec_ntb_check_link(sndev, MSG_CHECK_LINK);
+	switchtec_ntb_check_link(sndev);
 
 	return 0;
 }
@@ -830,8 +787,6 @@ static int switchtec_ntb_init_sndev(struct switchtec_ntb *sndev)
 	sndev->ntb.topo = NTB_TOPO_NONE;
 	sndev->ntb.ops = &switchtec_ntb_ops;
 
-	INIT_WORK(&sndev->link_reinit_work, link_reinit_work);
-
 	sndev->self_partition = sndev->stdev->partition;
 
 	sndev->mmio_ntb = sndev->stdev->mmio_ntb;
@@ -874,7 +829,7 @@ static int switchtec_ntb_init_sndev(struct switchtec_ntb *sndev)
 		}
 	}
 
-	dev_dbg(&sndev->stdev->dev, "Partition ID %d of %d\n",
+	dev_dbg(&sndev->stdev->dev, "Partition ID %d of %d",
 		sndev->self_partition, sndev->stdev->partition_count);
 
 	sndev->mmio_ctrl = (void * __iomem)sndev->mmio_ntb +
@@ -904,8 +859,8 @@ static int config_rsvd_lut_win(struct switchtec_ntb *sndev,
 		return rc;
 
 	ctl_val = ioread32(&ctl->bar_entry[peer_bar].ctl);
-	ctl_val &= 0xFF;
 	ctl_val |= NTB_CTRL_BAR_LUT_WIN_EN;
+	ctl_val &= 0xFF;
 	ctl_val |= ilog2(LUT_SIZE) << 8;
 	ctl_val |= (sndev->nr_lut_mw - 1) << 14;
 	iowrite32(ctl_val, &ctl->bar_entry[peer_bar].ctl);
@@ -921,7 +876,7 @@ static int config_rsvd_lut_win(struct switchtec_ntb *sndev,
 		bar_error = ioread32(&ctl->bar_error);
 		lut_error = ioread32(&ctl->lut_error);
 		dev_err(&sndev->stdev->dev,
-			"Error setting up reserved lut window: %08x / %08x\n",
+			"Error setting up reserved lut window: %08x / %08x",
 			bar_error, lut_error);
 		return rc;
 	}
@@ -939,7 +894,7 @@ static int config_req_id_table(struct switchtec_ntb *sndev,
 
 	if (ioread32(&mmio_ctrl->req_id_table_size) < count) {
 		dev_err(&sndev->stdev->dev,
-			"Not enough requester IDs available.\n");
+			"Not enough requester IDs available.");
 		return -EFAULT;
 	}
 
@@ -958,7 +913,7 @@ static int config_req_id_table(struct switchtec_ntb *sndev,
 
 		proxy_id = ioread32(&mmio_ctrl->req_id_table[i]);
 		dev_dbg(&sndev->stdev->dev,
-			"Requester ID %02X:%02X.%X -> BB:%02X.%X\n",
+			"Requester ID %02X:%02X.%X -> BB:%02X.%X",
 			req_ids[i] >> 8, (req_ids[i] >> 3) & 0x1F,
 			req_ids[i] & 0x7, (proxy_id >> 4) & 0x1F,
 			(proxy_id >> 1) & 0x7);
@@ -971,7 +926,7 @@ static int config_req_id_table(struct switchtec_ntb *sndev,
 	if (rc == -EIO) {
 		error = ioread32(&mmio_ctrl->req_id_error);
 		dev_err(&sndev->stdev->dev,
-			"Error setting up the requester ID table: %08x\n",
+			"Error setting up the requester ID table: %08x",
 			error);
 	}
 
@@ -1021,9 +976,7 @@ static int crosslink_setup_mws(struct switchtec_ntb *sndev, int ntb_lut_idx,
 		ctl_val |= NTB_CTRL_BAR_DIR_WIN_EN;
 
 		iowrite32(ctl_val, &ctl->bar_entry[bar].ctl);
-		iowrite32(xlate_pos | (size & 0xFFFFF000),
-			  &ctl->bar_entry[bar].win_size);
-		iowrite32(size >> 32, &ctl->bar_ext_entry[bar].win_size);
+		iowrite32(xlate_pos | size, &ctl->bar_entry[bar].win_size);
 		iowrite64(sndev->peer_partition | addr,
 			  &ctl->bar_entry[bar].xlate_addr);
 	}
@@ -1036,7 +989,7 @@ static int crosslink_setup_mws(struct switchtec_ntb *sndev, int ntb_lut_idx,
 		bar_error = ioread32(&ctl->bar_error);
 		lut_error = ioread32(&ctl->lut_error);
 		dev_err(&sndev->stdev->dev,
-			"Error setting up cross link windows: %08x / %08x\n",
+			"Error setting up cross link windows: %08x / %08x",
 			bar_error, lut_error);
 		return rc;
 	}
@@ -1090,7 +1043,7 @@ static int crosslink_enum_partition(struct switchtec_ntb *sndev,
 
 		dev_dbg(&sndev->stdev->dev,
 			"Crosslink BAR%d addr: %llx\n",
-			i*2, bar_addr);
+			i, bar_addr);
 
 		if (bar_addr != bar_space * i)
 			continue;
@@ -1114,7 +1067,7 @@ static int switchtec_ntb_init_crosslink(struct switchtec_ntb *sndev)
 	if (!crosslink_is_enabled(sndev))
 		return 0;
 
-	dev_info(&sndev->stdev->dev, "Using crosslink configuration\n");
+	dev_info(&sndev->stdev->dev, "Using crosslink configuration");
 
 	bar_cnt = crosslink_enum_partition(sndev, bar_addrs);
 	if (bar_cnt < sndev->nr_direct_mw + 1) {
@@ -1188,7 +1141,7 @@ static void switchtec_ntb_init_mw(struct switchtec_ntb *sndev)
 	sndev->nr_lut_mw = ioread16(&sndev->mmio_self_ctrl->lut_table_entries);
 	sndev->nr_lut_mw = rounddown_pow_of_two(sndev->nr_lut_mw);
 
-	dev_dbg(&sndev->stdev->dev, "MWs: %d direct, %d lut\n",
+	dev_dbg(&sndev->stdev->dev, "MWs: %d direct, %d lut",
 		sndev->nr_direct_mw, sndev->nr_lut_mw);
 
 	sndev->peer_nr_direct_mw = map_bars(sndev->peer_direct_mw_to_bar,
@@ -1198,7 +1151,7 @@ static void switchtec_ntb_init_mw(struct switchtec_ntb *sndev)
 		ioread16(&sndev->mmio_peer_ctrl->lut_table_entries);
 	sndev->peer_nr_lut_mw = rounddown_pow_of_two(sndev->peer_nr_lut_mw);
 
-	dev_dbg(&sndev->stdev->dev, "Peer MWs: %d direct, %d lut\n",
+	dev_dbg(&sndev->stdev->dev, "Peer MWs: %d direct, %d lut",
 		sndev->peer_nr_direct_mw, sndev->peer_nr_lut_mw);
 
 }
@@ -1263,12 +1216,12 @@ switchtec_ntb_init_req_id_table(struct switchtec_ntb *sndev)
 	int req_ids[2];
 
 	/*
-	 * Root Complex Requester ID (which is 0:00.0)
+	 * Root Complex
 	 */
 	req_ids[0] = 0;
 
 	/*
-	 * Host Bridge Requester ID (as read from the mmap address)
+	 * Host Bridge
 	 */
 	req_ids[1] = ioread16(&sndev->mmio_ntb->requester_id);
 
@@ -1314,7 +1267,7 @@ static int switchtec_ntb_init_shared_mw(struct switchtec_ntb *sndev)
 						 GFP_KERNEL);
 	if (!sndev->self_shared) {
 		dev_err(&sndev->stdev->dev,
-			"unable to allocate memory for shared mw\n");
+			"unable to allocate memory for shared mw");
 		return -ENOMEM;
 	}
 
@@ -1332,7 +1285,7 @@ static int switchtec_ntb_init_shared_mw(struct switchtec_ntb *sndev)
 		goto unalloc_and_exit;
 	}
 
-	dev_dbg(&sndev->stdev->dev, "Shared MW Ready\n");
+	dev_dbg(&sndev->stdev->dev, "Shared MW Ready");
 	return 0;
 
 unalloc_and_exit:
@@ -1374,12 +1327,12 @@ static irqreturn_t switchtec_ntb_message_isr(int irq, void *dev)
 		u64 msg = ioread64(&sndev->mmio_self_dbmsg->imsg[i]);
 
 		if (msg & NTB_DBMSG_IMSG_STATUS) {
-			dev_dbg(&sndev->stdev->dev, "message: %d %08x\n",
-				i, (u32)msg);
+			dev_dbg(&sndev->stdev->dev, "message: %d %08x\n", i,
+				(u32)msg);
 			iowrite8(1, &sndev->mmio_self_dbmsg->imsg[i].status);
 
 			if (i == LINK_MESSAGE)
-				switchtec_ntb_check_link(sndev, msg);
+				switchtec_ntb_check_link(sndev);
 		}
 	}
 
@@ -1403,7 +1356,7 @@ static int switchtec_ntb_init_db_msg_irq(struct switchtec_ntb *sndev)
 	       message_irq == event_irq)
 		message_irq++;
 
-	dev_dbg(&sndev->stdev->dev, "irqs - event: %d, db: %d, msgs: %d\n",
+	dev_dbg(&sndev->stdev->dev, "irqs - event: %d, db: %d, msgs: %d",
 		event_irq, doorbell_irq, message_irq);
 
 	for (i = 0; i < idb_vecs - 4; i++)
@@ -1438,14 +1391,6 @@ static void switchtec_ntb_deinit_db_msg_irq(struct switchtec_ntb *sndev)
 {
 	free_irq(sndev->doorbell_irq, sndev);
 	free_irq(sndev->message_irq, sndev);
-}
-
-static int switchtec_ntb_reinit_peer(struct switchtec_ntb *sndev)
-{
-	dev_info(&sndev->stdev->dev, "peer reinitialized\n");
-	switchtec_ntb_deinit_shared_mw(sndev);
-	switchtec_ntb_init_mw(sndev);
-	return switchtec_ntb_init_shared_mw(sndev);
 }
 
 static int switchtec_ntb_add(struct device *dev,
@@ -1490,20 +1435,13 @@ static int switchtec_ntb_add(struct device *dev,
 	if (rc)
 		goto deinit_shared_and_exit;
 
-	/*
-	 * If this host crashed, the other host may think the link is
-	 * still up. Tell them to force it down (it will go back up
-	 * once we register the ntb device).
-	 */
-	switchtec_ntb_send_msg(sndev, LINK_MESSAGE, MSG_LINK_FORCE_DOWN);
-
 	rc = ntb_register_device(&sndev->ntb);
 	if (rc)
 		goto deinit_and_exit;
 
 	stdev->sndev = sndev;
 	stdev->link_notifier = switchtec_ntb_link_notification;
-	dev_info(dev, "NTB device registered\n");
+	dev_info(dev, "NTB device registered");
 
 	return 0;
 
@@ -1515,7 +1453,7 @@ deinit_crosslink:
 	switchtec_ntb_deinit_crosslink(sndev);
 free_and_exit:
 	kfree(sndev);
-	dev_err(dev, "failed to register ntb device: %d\n", rc);
+	dev_err(dev, "failed to register ntb device: %d", rc);
 	return rc;
 }
 
@@ -1535,7 +1473,7 @@ void switchtec_ntb_remove(struct device *dev,
 	switchtec_ntb_deinit_shared_mw(sndev);
 	switchtec_ntb_deinit_crosslink(sndev);
 	kfree(sndev);
-	dev_info(dev, "ntb device unregistered\n");
+	dev_info(dev, "ntb device unregistered");
 }
 
 static struct class_interface switchtec_interface  = {
