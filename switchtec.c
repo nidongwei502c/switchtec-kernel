@@ -25,7 +25,7 @@
 #include "switchtec_sg.h"
 
 MODULE_DESCRIPTION("Microsemi Switchtec(tm) PCIe Management Driver");
-MODULE_VERSION("0.1.2");
+MODULE_VERSION("0.1.4");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Microsemi Corporation");
 
