@@ -22,6 +22,7 @@
 #include <linux/uaccess.h>
 #include <linux/poll.h>
 #include <linux/wait.h>
+#include "switchtec_sg.h"
 
 #include "version.h"
 MODULE_DESCRIPTION("Microsemi Switchtec(tm) PCIe Management Driver");
@@ -982,6 +983,14 @@ static long switchtec_dev_ioctl(struct file *filp, unsigned int cmd,
 		break;
 	case SWITCHTEC_IOCTL_PORT_TO_PFF:
 		rc = ioctl_port_to_pff(stdev, argp);
+		break;
+	case SWITCHTEC_IOCTL_SG_CMD:
+		LOG_DEBUG("%s: SG ioctl\n", __FUNCTION__);
+		rc = fem_sg_ioctl(filp, cmd, arg);
+		break;
+	case SG_OEM_PAGE:
+		LOG_DEBUG("%s: Light SG OEM page\n", __FUNCTION__);
+		rc = pmc_psx_ioctl(filp,cmd,arg);
 		break;
 	default:
 		rc = -ENOTTY;
