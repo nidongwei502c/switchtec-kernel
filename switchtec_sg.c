@@ -1,19 +1,13 @@
 /*******************************************************************************
- *   COPYRIGHT (C) 2017 - 2018 CELESTICA, INC. ALL RIGHTS RESERVED.
- * --------------------------------------------------------------------------
- *  This software embodies materials and concepts which are proprietary and
- *  confidential to CELESTICA, Inc.
- *  CELESTICA distributes this software to its customers pursuant to the
- *  terms and conditions of the Software License Agreement
- *  contained in the text file software.lic that is distributed along with
- *  the software. This software can only be utilized if all
- *  terms and conditions of the Software License Agreement are
- *  accepted. If there are any questions, concerns, or if the
- *  Software License Agreement text file, software.lic, is missing please
- *  contact CELESTICA for assistance.
- * --------------------------------------------------------------------------
- ****************************************************************************/
-
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 2 of the License, or
+(at your option) any later version.
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+*******************************************************************************/
 
 #include <linux/switchtec.h>
 #include <linux/switchtec_ioctl.h>
